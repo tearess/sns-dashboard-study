@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 post_x_direct.py)",
+      "Bash(python3 -c \":*)",
+      "Bash(supabase --version)"
+    ],
+    "additionalDirectories": [
+      "/Users/ayang/.claude/projects/-Users-ayang-Antigravity-SNS-----"
+    ]
+  }
+}
