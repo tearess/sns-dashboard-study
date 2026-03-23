@@ -35,7 +35,7 @@ const PLATFORMS = {
   instagram: { name: "Instagram", color: "#E1306C", bg: "#E1306C15", icon: "📸" },
   facebook: { name: "Facebook", color: "#1877F2", bg: "#1877F215", icon: "👤" },
   twitter: { name: "X (Twitter)", color: "#14171A", bg: "#14171A12", icon: "𝕏" },
-  threads: { name: "Threads", color: "#000000", bg: "#00000010", icon: "🔗" },
+  threads: { name: "Threads", color: "#6B7280", bg: "#6B728015", icon: "🔗" },
   youtube: { name: "YouTube", color: "#FF0000", bg: "#FF000012", icon: "▶️" },
 };
 
@@ -298,19 +298,65 @@ export default function SNSDashboard() {
   const [contentFilter, setContentFilter] = useState("all");
   const [contentEditTab, setContentEditTab] = useState("twitter");
   const [publishMode, setPublishMode] = useState("now"); // "now" | "schedule"
-  const [contentsList, setContentsList] = useState(MOCK_CONTENTS_DATA);
+  const [contentsList, setContentsList] = useState([]);
 
-  // AI 도구 관리 (localStorage 영속)
-  const [aiTools, setAiTools] = useState(() => {
-    const saved = localStorage.getItem("aiTools");
-    return saved ? JSON.parse(saved) : [
-      { icon: "🤖", label: "ChatGPT로 작성", url: "https://chat.openai.com", desc: "내 GPTs 활용" },
-      { icon: "✨", label: "Gemini로 작성", url: "https://gemini.google.com", desc: "내 Gems 활용" },
-      { icon: "🎨", label: "Canva 이미지", url: "https://www.canva.com", desc: "SNS 맞춤 디자인" },
-      { icon: "🎬", label: "CapCut 영상", url: "https://www.capcut.com", desc: "숏츠/릴스 제작" },
-      { icon: "🖼️", label: "Ideogram AI", url: "https://ideogram.ai", desc: "AI 이미지 생성" },
-    ];
+  // Supabase DB → JS 변환 헬퍼
+  const dbToContent = (row) => ({
+    id: row.id,
+    title: row.title || "",
+    masterText: row.master_text || "",
+    status: row.status || "draft",
+    scheduledAt: row.scheduled_at ? row.scheduled_at.replace("T", " ").slice(0, 16) : null,
+    platforms: row.platforms || [],
+    platformDrafts: row.platform_drafts || {},
+    publishResults: row.publish_results || {},
+    registrant: row.registrant || "",
+    registeredAt: row.registered_at || "",
+    firstPublishedAt: row.first_published_at ? row.first_published_at.replace("T", " ").slice(0, 16) : null,
+    updatedAt: row.updated_at ? row.updated_at.replace("T", " ").slice(0, 16) : null,
   });
+
+  // JS → Supabase DB 변환 헬퍼
+  const contentToDb = (c) => ({
+    title: c.title,
+    master_text: c.masterText,
+    status: c.status,
+    scheduled_at: c.scheduledAt || null,
+    platforms: c.platforms,
+    platform_drafts: c.platformDrafts,
+    publish_results: c.publishResults || {},
+    registrant: c.registrant,
+    registered_at: c.registeredAt || new Date().toISOString().slice(0, 10),
+    first_published_at: c.firstPublishedAt || null,
+    updated_at: c.updatedAt || null,
+  });
+
+  // 콘텐츠 목록 불러오기
+  useEffect(() => {
+    supabase.from("contents").select("*").order("id", { ascending: false })
+      .then(({ data, error }) => {
+        if (error) { console.error("콘텐츠 불러오기 오류:", error); return; }
+        setContentsList((data || []).map(dbToContent));
+      });
+  }, []);
+
+  // AI 도구 관리 (Supabase settings 영속)
+  const AI_TOOLS_DEFAULT = [
+    { icon: "🤖", label: "ChatGPT로 작성", url: "https://chat.openai.com", desc: "내 GPTs 활용" },
+    { icon: "✨", label: "Gemini로 작성", url: "https://gemini.google.com", desc: "내 Gems 활용" },
+    { icon: "🎨", label: "Canva 이미지", url: "https://www.canva.com", desc: "SNS 맞춤 디자인" },
+    { icon: "🎬", label: "CapCut 영상", url: "https://www.capcut.com", desc: "숏츠/릴스 제작" },
+    { icon: "🖼️", label: "Ideogram AI", url: "https://ideogram.ai", desc: "AI 이미지 생성" },
+  ];
+  const [aiTools, setAiTools] = useState(AI_TOOLS_DEFAULT);
+  useEffect(() => {
+    supabase.from("settings").select("value").eq("key", "ai_tools").single()
+      .then(({ data }) => { if (data?.value) setAiTools(data.value); });
+  }, []);
+  const saveAiToolsToDb = async (updated) => {
+    setAiTools(updated);
+    await supabase.from("settings").upsert({ key: "ai_tools", value: updated, updated_at: new Date().toISOString() });
+  };
   const [aiToolEditMode, setAiToolEditMode] = useState(null); // null | "add" | index
   const [aiToolEditData, setAiToolEditData] = useState({ icon: "", label: "", url: "", desc: "" });
 
@@ -322,18 +368,44 @@ export default function SNSDashboard() {
   const draftPlatformDragRef = useRef(null);
 
   // 초안 자동 생성
-  const [draftGenPrompt, setDraftGenPrompt] = useState("각 SNS 플랫폼의 특성에 맞게 최적화해주세요. X는 간결하고 임팩트 있게, YouTube는 상세하고 SEO 친화적으로, Instagram은 감성적·비주얼 중심으로, Facebook은 친근하고 커뮤니티 공감형으로, Threads는 짧고 대화체로 작성해주세요.");
+  const [draftPrompts, setDraftPrompts] = useState([]);
+  const [selectedPromptId, setSelectedPromptId] = useState(null); // null | "new" | number(id)
+  const [draftPromptEdit, setDraftPromptEdit] = useState({ title: "", content: "" });
   const [draftGenPlatforms, setDraftGenPlatforms] = useState(["twitter", "youtube", "facebook", "instagram", "threads"]);
   const [isDraftGenerating, setIsDraftGenerating] = useState(false);
   const [optimizationTab, setOptimizationTab] = useState("pattern");
+  useEffect(() => {
+    supabase.from("settings").select("value").eq("key", "draft_prompts").single()
+      .then(({ data }) => {
+        if (data?.value) {
+          setDraftPrompts(data.value);
+          // 첫 번째 프롬프트 자동 선택
+          if (data.value.length > 0) {
+            setSelectedPromptId(data.value[0].id);
+            setDraftPromptEdit({ title: data.value[0].title, content: data.value[0].content });
+          }
+        } else {
+          // 저장된 프롬프트 없으면 새 프롬프트 모드로 시작
+          setSelectedPromptId("new");
+        }
+      });
+  }, []);
+  const saveDraftPromptsToDb = async (updated) => {
+    setDraftPrompts(updated);
+    const { error } = await supabase.from("settings").upsert({ key: "draft_prompts", value: updated, updated_at: new Date().toISOString() });
+    if (error) throw new Error(error.message);
+  };
 
-  // 콘텐츠 목록 검색 상태
+  // 콘텐츠 목록 검색 상태 (입력 중)
   const [searchTitle, setSearchTitle] = useState("");
-  const [searchPlatforms, setSearchPlatforms] = useState([]); // 빈 배열 = 전체
-  const [searchStatuses, setSearchStatuses] = useState([]);   // 빈 배열 = 전체
+  const [searchPlatforms, setSearchPlatforms] = useState(["twitter", "youtube", "facebook", "instagram", "threads"]);
+  const [searchStatuses, setSearchStatuses] = useState([]);
   const [searchRegDate, setSearchRegDate] = useState("");
   const [searchPubDate, setSearchPubDate] = useState("");
   const [searchRegistrant, setSearchRegistrant] = useState("");
+  // 검색 버튼 클릭 시 적용되는 실제 필터
+  const ALL_PLATFORMS = ["twitter", "youtube", "facebook", "instagram", "threads"];
+  const [appliedSearch, setAppliedSearch] = useState({ title: "", platforms: ALL_PLATFORMS, statuses: [], regDate: "", pubDate: "", registrant: "" });
 
   // 콘텐츠 캘린더 상태
   const [contentsCalView, setContentsCalView] = useState("month");
@@ -390,6 +462,7 @@ export default function SNSDashboard() {
     github:      { personalAccessToken: "", owner: "", repo: "" },
     vercel:      { accessToken: "", projectId: "", orgId: "" },
     googleSheet: { spreadsheetId: "", serviceAccountEmail: "", privateKey: "" },
+    openai:      { apiKey: "" },
   });
   const [serviceSaveStatus, setServiceSaveStatus] = useState({});
 
@@ -452,32 +525,88 @@ export default function SNSDashboard() {
     loadCredentials();
   }, []);
 
-  // 편집 화면 초안 자동 생성 (마스터 글 기반 모의 생성)
-  const handleDraftGenerate = () => {
-    if (!editingContent?.masterText?.trim()) return;
+  // 편집 화면 초안 자동 생성 (OpenAI API 호출)
+  const handleDraftGenerate = async () => {
+    if (!editingContent?.masterText?.trim()) {
+      alert("마스터 글을 입력해주세요.\n마스터 글이 있어야 초안을 생성할 수 있습니다.");
+      return;
+    }
+    if (!draftPromptEdit.content.trim()) {
+      alert("프롬프트를 선택하거나 입력해주세요.\n왼쪽 목록에서 프롬프트를 선택하거나 내용을 직접 입력해주세요.");
+      return;
+    }
+    if (draftGenPlatforms.length === 0) {
+      alert("생성할 플랫폼을 하나 이상 선택해주세요.");
+      return;
+    }
+    const apiKey = serviceCredentials.openai?.apiKey?.trim();
+    if (!apiKey) {
+      alert("OpenAI API 키가 없습니다.\n연동 관리 > 서비스 연동 > OpenAI에서 키를 저장해주세요.");
+      return;
+    }
+
     setIsDraftGenerating(true);
-    const text = editingContent.masterText;
-    const title = editingContent.title || "새 콘텐츠";
-    setTimeout(() => {
+
+    const PLATFORM_NAMES = { twitter: "X (Twitter)", youtube: "YouTube 커뮤니티", facebook: "Facebook", instagram: "Instagram", threads: "Threads" };
+    const PLATFORM_GUIDES = {
+      twitter:   "140자 이내, 간결하고 임팩트 있게, 해시태그 3개 이하",
+      youtube:   "200자 이내, 친근하고 상세하게, 유튜브 커뮤니티 게시글 형식",
+      facebook:  "공감형·커뮤니티 친화적, 질문으로 마무리, 이모지 적절히 사용",
+      instagram: "감성적·비주얼 중심, 줄바꿈 활용, 해시태그 10개 이하",
+      threads:   "짧고 대화체, 200자 이내, 가볍게 읽히는 톤",
+    };
+
+    const platformList = draftGenPlatforms
+      .map(p => `- ${PLATFORM_NAMES[p]}: ${PLATFORM_GUIDES[p]}`)
+      .join("\n");
+
+    const promptInstruction = draftPromptEdit.content.trim();
+
+    const systemPrompt = `당신은 SNS 콘텐츠 전문가입니다. 주어진 마스터 글을 각 플랫폼에 맞게 재작성해주세요.
+
+추가 지침: ${promptInstruction}
+
+플랫폼별 요구사항:
+${platformList}
+
+응답 형식: 반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트 없이 JSON만 출력하세요.
+{
+  ${draftGenPlatforms.map(p => `"${p}": "해당 플랫폼용 글"`).join(",\n  ")}
+}`;
+
+    try {
+      const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: `마스터 글:\n${editingContent.masterText}` },
+          ],
+          temperature: 0.7,
+        }),
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error?.message || `API 오류 ${resp.status}`);
+
+      const raw = data.choices[0].message.content.trim();
+      const jsonStr = raw.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
+      const generated = JSON.parse(jsonStr);
+
+      setEditingContent(prev => ({
+        ...prev,
+        platformDrafts: { ...prev.platformDrafts, ...generated },
+      }));
+    } catch (e) {
+      alert(`초안 생성 실패: ${e.message}`);
+    } finally {
       setIsDraftGenerating(false);
-      const newDrafts = { ...editingContent.platformDrafts };
-      if (draftGenPlatforms.includes("twitter")) {
-        newDrafts.twitter = `🧵 ${title}\n\n${text.slice(0, 120)}...\n\n---\n\n핵심 정리:\n• ${text.slice(0, 40)}...\n• 실무에 바로 적용 가능\n• 초보자도 시작 가능\n\n#SNS자동화 #마케팅 #생산성`;
-      }
-      if (draftGenPlatforms.includes("youtube")) {
-        newDrafts.youtube = `📺 ${title} | 완전 가이드\n\n✅ 이 영상에서 배울 내용:\n- ${text.slice(0, 60)}...\n- 실전 활용 사례\n- 따라하기 가능한 튜토리얼\n\n${text.slice(0, 250)}\n\n⏱ 타임스탬프:\n00:00 인트로\n02:00 핵심 개념 설명\n05:00 실전 시연\n10:00 정리\n\n구독과 좋아요는 큰 힘이 됩니다! 🔔`;
-      }
-      if (draftGenPlatforms.includes("facebook")) {
-        newDrafts.facebook = `안녕하세요! 오늘은 ${title}에 대해 이야기해보려고 합니다.\n\n${text.slice(0, 300)}\n\n여러분은 어떻게 생각하시나요? 궁금한 점이 있으시면 댓글로 남겨주세요! 👇`;
-      }
-      if (draftGenPlatforms.includes("instagram")) {
-        newDrafts.instagram = `✨ ${title}\n\n${text.slice(0, 150)}\n\n---\n\n알고 계셨나요? 💡\n더 자세한 내용은 프로필 링크에서!\n\n#마케팅 #SNS #콘텐츠 #자동화 #인스타그램`;
-      }
-      if (draftGenPlatforms.includes("threads")) {
-        newDrafts.threads = `${text.slice(0, 200)}\n\n이런 경험 있으신가요?\n댓글로 여러분 생각 들려주세요 ✋`;
-      }
-      setEditingContent(prev => ({ ...prev, platformDrafts: newDrafts }));
-    }, 1200);
+    }
   };
 
   const handleGenerate = () => {
@@ -765,18 +894,17 @@ export default function SNSDashboard() {
 
           {/* 검색 조건 */}
           <div style={{ background: "#f8fafc", borderRadius: 10, padding: "16px 20px", marginBottom: 16, border: "1px solid #e2e8f0" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: "#374151", minWidth: 56 }}>플랫폼</span>
-              {Object.entries(PLATFORMS).map(([key, p]) => (
-                <label key={key} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 13 }}>
-                  <input
-                    type="checkbox"
-                    checked={homeChannelPlatforms.includes(key)}
-                    onChange={e => setHomeChannelPlatforms(prev => e.target.checked ? [...prev, key] : prev.filter(x => x !== key))}
-                  />
-                  <span style={{ color: p.color, fontWeight: 500 }}>{p.icon} {p.name}</span>
-                </label>
-              ))}
+              {Object.entries(PLATFORMS).map(([key, p]) => {
+                const on = homeChannelPlatforms.includes(key);
+                return (
+                  <button key={key} onClick={() => setHomeChannelPlatforms(prev => on ? prev.filter(x => x !== key) : [...prev, key])}
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", borderRadius: 100, fontSize: 12, fontWeight: 600, cursor: "pointer", border: `1px solid ${on ? p.color : "#d1d5db"}`, background: on ? p.color : "#fff", color: on ? "#fff" : "#374151", transition: "all 0.15s" }}>
+                    {p.icon} {p.name}
+                  </button>
+                );
+              })}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: "#374151", minWidth: 56 }}>조회 기간</span>
@@ -844,18 +972,17 @@ export default function SNSDashboard() {
 
           {/* 검색 조건 */}
           <div style={{ background: "#f8fafc", borderRadius: 10, padding: "16px 20px", marginBottom: 16, border: "1px solid #e2e8f0" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: "#374151", minWidth: 56 }}>플랫폼</span>
-              {Object.entries(PLATFORMS).map(([key, p]) => (
-                <label key={key} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 13 }}>
-                  <input
-                    type="checkbox"
-                    checked={homeContentPlatforms.includes(key)}
-                    onChange={e => setHomeContentPlatforms(prev => e.target.checked ? [...prev, key] : prev.filter(x => x !== key))}
-                  />
-                  <span style={{ color: p.color, fontWeight: 500 }}>{p.icon} {p.name}</span>
-                </label>
-              ))}
+              {Object.entries(PLATFORMS).map(([key, p]) => {
+                const on = homeContentPlatforms.includes(key);
+                return (
+                  <button key={key} onClick={() => setHomeContentPlatforms(prev => on ? prev.filter(x => x !== key) : [...prev, key])}
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", borderRadius: 100, fontSize: 12, fontWeight: 600, cursor: "pointer", border: `1px solid ${on ? p.color : "#d1d5db"}`, background: on ? p.color : "#fff", color: on ? "#fff" : "#374151", transition: "all 0.15s" }}>
+                    {p.icon} {p.name}
+                  </button>
+                );
+              })}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: "#374151", minWidth: 56 }}>조회 기간</span>
@@ -1123,15 +1250,13 @@ export default function SNSDashboard() {
       const updated = aiToolEditMode === "add"
         ? [...aiTools, aiToolEditData]
         : aiTools.map((t, i) => i === aiToolEditMode ? aiToolEditData : t);
-      setAiTools(updated);
-      localStorage.setItem("aiTools", JSON.stringify(updated));
+      saveAiToolsToDb(updated);
       setAiToolEditMode(null);
       setAiToolEditData({ icon: "", label: "", url: "", desc: "" });
     };
     const deleteAiTool = (index) => {
       const updated = aiTools.filter((_, i) => i !== index);
-      setAiTools(updated);
-      localStorage.setItem("aiTools", JSON.stringify(updated));
+      saveAiToolsToDb(updated);
     };
 
     // 편집 화면 하단 플랫폼 카드 드래그 핸들러
@@ -1171,44 +1296,51 @@ export default function SNSDashboard() {
 
         // 즉시 발행: 체크된 플랫폼에 Edge Function 호출
         if (statusOverride === "published") {
-          const EDGE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/post-x`;
           const results = {};
 
           // X 발행
           if (toSave.platforms?.includes("twitter") && toSave.platformDrafts?.twitter?.trim()) {
-            if (!window.confirm(`X에 다음 글을 발행하시겠습니까?\n\n${toSave.platformDrafts.twitter}`)) {
-              return;
-            }
             try {
-              const resp = await fetch(EDGE_URL, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-                },
-                body: JSON.stringify({ text: toSave.platformDrafts.twitter }),
+              const { data, error } = await supabase.functions.invoke("post-x", {
+                body: { text: toSave.platformDrafts.twitter },
               });
-              const data = await resp.json();
-              if (data.success) {
+              if (error) throw new Error(error.message);
+              if (data?.success) {
                 results.twitter = `발행완료 ${new Date().toLocaleDateString("ko-KR")} | ${data.url}`;
                 alert(`✅ X 발행 완료!\n${data.url}`);
               } else {
-                results.twitter = `오류: ${data.error}`;
-                alert(`❌ X 발행 실패: ${data.error}`);
+                results.twitter = `오류: ${data?.error}`;
+                alert(`❌ X 발행 실패: ${data?.error}`);
               }
             } catch (e) {
               results.twitter = `오류: ${e.message}`;
               alert(`❌ X 발행 오류: ${e.message}`);
             }
+          } else if (toSave.platforms?.includes("twitter")) {
+            alert("X 글을 입력해주세요.");
+            return;
           }
 
           toSave.publishResults = { ...toSave.publishResults, ...results };
+
+          // 최초 발행일 / 수정일 자동 기록
+          const now = new Date().toISOString().replace("T", " ").slice(0, 16);
+          if (!toSave.firstPublishedAt) {
+            toSave.firstPublishedAt = now;
+          } else {
+            toSave.updatedAt = now;
+          }
         }
 
         if (!toSave.id) {
-          const newId = contentsList.length > 0 ? Math.max(...contentsList.map(c => c.id)) + 1 : 1;
-          setContentsList(prev => [...prev, { ...toSave, id: newId }]);
+          // 신규 저장
+          const { data, error } = await supabase.from("contents").insert(contentToDb(toSave)).select().single();
+          if (error) { alert("저장 오류: " + error.message); return; }
+          setContentsList(prev => [dbToContent(data), ...prev]);
         } else {
+          // 수정 저장
+          const { error } = await supabase.from("contents").update(contentToDb(toSave)).eq("id", toSave.id);
+          if (error) { alert("저장 오류: " + error.message); return; }
           setContentsList(prev => prev.map(c => c.id === toSave.id ? toSave : c));
         }
         setContentsView("list");
@@ -1234,179 +1366,293 @@ export default function SNSDashboard() {
             />
           </div>
 
-          {/* ─── 상단: 마스터 글 (좌) + AI 도구 바로가기 (우) ─── */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16, alignItems: "start" }}>
-
-            {/* 왼쪽: 마스터 글 + 초안 자동 생성 */}
-            <div style={styles.card}>
-              <div style={styles.cardTitle}>✍️ 마스터 글</div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 10 }}>원본 내용을 자유롭게 작성하세요. 이걸 기반으로 각 SNS용 초안을 자동 생성할 수 있습니다.</div>
-              <textarea
-                style={{ ...styles.textarea, minHeight: 180 }}
-                placeholder="블로그 포스트, 보도자료, 제품 설명 등 어떤 형태든 괜찮습니다."
-                value={content.masterText}
-                onChange={e => updateContent("masterText", e.target.value)}
-              />
-              {/* 초안 자동 생성 섹션 */}
-              <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid #f1f5f9" }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginBottom: 4 }}>✨ 초안 자동 생성</div>
-                <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 12 }}>마스터 글을 기반으로 각 SNS에 맞는 초안을 자동으로 작성합니다.</div>
-                {/* 플랫폼 선택 */}
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 6 }}>생성할 플랫폼 선택</div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-                  {draftPlatformOrder.map(p => (
-                    <button
-                      key={p}
-                      onClick={() => setDraftGenPlatforms(prev =>
-                        prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]
-                      )}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 4,
-                        padding: "4px 10px", borderRadius: 100, border: "none", cursor: "pointer",
-                        fontSize: 11, fontWeight: 600,
-                        background: draftGenPlatforms.includes(p) ? PLATFORMS[p].color : "#f1f5f9",
-                        color: draftGenPlatforms.includes(p) ? "#fff" : "#94a3b8",
-                        transition: "all 0.15s",
-                      }}
-                    >
-                      {PLATFORMS[p].icon} {PLATFORMS[p].name}
-                    </button>
+          {/* ─── 마스터 글 + AI 도구 바로가기 ─── */}
+          <div style={{ ...styles.card, marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
+              <div style={styles.cardTitle}>✍️ 마스터 글 & AI 작성 도구</div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
+              {/* 왼쪽: 마스터 글 */}
+              <div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 8 }}>원본 내용을 자유롭게 작성하세요. 이걸 기반으로 각 SNS용 초안을 자동 생성할 수 있습니다.</div>
+                <textarea
+                  style={{ ...styles.textarea, minHeight: 180 }}
+                  placeholder="블로그 포스트, 보도자료, 제품 설명 등 어떤 형태든 괜찮습니다."
+                  value={content.masterText}
+                  onChange={e => updateContent("masterText", e.target.value)}
+                />
+              </div>
+              {/* 오른쪽: AI 작성 도구 바로가기 */}
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#374151" }}>🔗 AI 작성 도구 바로가기</div>
+                  <button
+                    style={{ ...styles.btnSm(aiToolEditMode === "add"), fontSize: 11 }}
+                    onClick={() => {
+                      if (aiToolEditMode === "add") { setAiToolEditMode(null); }
+                      else { setAiToolEditMode("add"); setAiToolEditData({ icon: "🔧", label: "", url: "", desc: "" }); }
+                    }}
+                  >
+                    {aiToolEditMode === "add" ? "취소" : "+ 추가"}
+                  </button>
+                </div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 10 }}>외부 AI 도구에서 글·이미지·영상을 만들고 아래 SNS 카드에 붙여넣으세요.</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: aiToolEditMode !== null ? 14 : 0 }}>
+                  {aiTools.map((tool, i) => (
+                    <div key={i} style={{ position: "relative" }}>
+                      <a
+                        href={tool.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: "flex", alignItems: "center", gap: 8,
+                          padding: "10px 12px", paddingRight: 40, borderRadius: 8,
+                          background: aiToolEditMode === i ? "#ede9fe" : "#f8fafc",
+                          border: `1px solid ${aiToolEditMode === i ? "#c7d2fe" : "#e8eaf0"}`,
+                          textDecoration: "none", color: "#374151",
+                          fontSize: 12, fontWeight: 500, transition: "all 0.15s",
+                        }}
+                        onMouseEnter={e => { if (aiToolEditMode !== i) e.currentTarget.style.background = "#f1f5f9"; }}
+                        onMouseLeave={e => { if (aiToolEditMode !== i) e.currentTarget.style.background = "#f8fafc"; }}
+                      >
+                        <span style={{ fontSize: 18, flexShrink: 0 }}>{tool.icon}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tool.label}</div>
+                          <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 1 }}>{tool.desc}</div>
+                        </div>
+                      </a>
+                      <button
+                        style={{ position: "absolute", top: 8, right: 6, padding: "2px 5px", fontSize: 10, borderRadius: 4, border: "1px solid #e2e8f0", background: "#fff", cursor: "pointer", color: "#6366f1" }}
+                        onClick={e => { e.preventDefault(); setAiToolEditMode(i); setAiToolEditData({ ...tool }); }}
+                      >수정</button>
+                    </div>
                   ))}
                 </div>
-                {/* 프롬프트 */}
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>
-                  생성 프롬프트
-                  <span style={{ fontWeight: 400, color: "#94a3b8", marginLeft: 4 }}>(지속적으로 고도화하세요)</span>
-                </div>
-                <textarea
-                  style={{ ...styles.textarea, minHeight: 70, fontSize: 12, marginBottom: 10 }}
-                  value={draftGenPrompt}
-                  onChange={e => setDraftGenPrompt(e.target.value)}
-                />
-                {/* 생성 버튼 */}
-                <button
-                  style={{
-                    ...styles.btn(true),
-                    width: "100%", justifyContent: "center",
-                    background: isDraftGenerating ? "#94a3b8" : "linear-gradient(135deg, #6366f1, #8b5cf6)",
-                    borderColor: "transparent",
-                    opacity: isDraftGenerating ? 0.8 : 1,
-                    pointerEvents: isDraftGenerating ? "none" : "auto",
-                  }}
-                  onClick={handleDraftGenerate}
-                >
-                  {isDraftGenerating ? "✨ 생성 중..." : "✨ 초안 생성하기"}
-                </button>
-              </div>
-            </div>
-
-            {/* 오른쪽: AI 작성 도구 바로가기 */}
-            <div style={styles.card}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div style={styles.cardTitle}>🔗 AI 작성 도구 바로가기</div>
-                <button
-                  style={{ ...styles.btnSm(aiToolEditMode === "add"), fontSize: 11 }}
-                  onClick={() => {
-                    if (aiToolEditMode === "add") { setAiToolEditMode(null); }
-                    else { setAiToolEditMode("add"); setAiToolEditData({ icon: "🔧", label: "", url: "", desc: "" }); }
-                  }}
-                >
-                  {aiToolEditMode === "add" ? "취소" : "+ 추가"}
-                </button>
-              </div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 12 }}>외부 AI 도구에서 글·이미지·영상을 만들고 아래 SNS 카드에 붙여넣으세요.</div>
-              {/* 2열 그리드 */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: aiToolEditMode !== null ? 14 : 0 }}>
-                {aiTools.map((tool, i) => (
-                  <div key={i} style={{ position: "relative" }}>
-                    <a
-                      href={tool.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{
-                        display: "flex", alignItems: "center", gap: 8,
-                        padding: "10px 12px", paddingRight: 40, borderRadius: 8,
-                        background: aiToolEditMode === i ? "#ede9fe" : "#f8fafc",
-                        border: `1px solid ${aiToolEditMode === i ? "#c7d2fe" : "#e8eaf0"}`,
-                        textDecoration: "none", color: "#374151",
-                        fontSize: 12, fontWeight: 500, transition: "all 0.15s",
-                      }}
-                      onMouseEnter={e => { if (aiToolEditMode !== i) e.currentTarget.style.background = "#f1f5f9"; }}
-                      onMouseLeave={e => { if (aiToolEditMode !== i) e.currentTarget.style.background = "#f8fafc"; }}
-                    >
-                      <span style={{ fontSize: 18, flexShrink: 0 }}>{tool.icon}</span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tool.label}</div>
-                        <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 1 }}>{tool.desc}</div>
-                      </div>
-                    </a>
-                    <button
-                      style={{ position: "absolute", top: 8, right: 6, padding: "2px 5px", fontSize: 10, borderRadius: 4, border: "1px solid #e2e8f0", background: "#fff", cursor: "pointer", color: "#6366f1" }}
-                      onClick={e => { e.preventDefault(); setAiToolEditMode(i); setAiToolEditData({ ...tool }); }}
-                    >수정</button>
-                  </div>
-                ))}
-              </div>
-              {/* 인라인 편집 폼 */}
-              {aiToolEditMode !== null && (
-                <div style={{ padding: 14, borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>
-                    {aiToolEditMode === "add" ? "도구 추가" : "도구 수정"}
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "80px 1fr", gap: 8, marginBottom: 8 }}>
-                    <div>
-                      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>이모지</div>
-                      <input
-                        style={{ ...styles.input, textAlign: "center", fontSize: 20, padding: "6px" }}
-                        placeholder="🔧"
-                        value={aiToolEditData.icon}
-                        onChange={e => setAiToolEditData(prev => ({ ...prev, icon: e.target.value }))}
-                      />
+                {aiToolEditMode !== null && (
+                  <div style={{ padding: 14, borderRadius: 10, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>
+                      {aiToolEditMode === "add" ? "도구 추가" : "도구 수정"}
                     </div>
-                    <div>
-                      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>서비스명</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "80px 1fr", gap: 8, marginBottom: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>이모지</div>
+                        <input
+                          style={{ ...styles.input, textAlign: "center", fontSize: 20, padding: "6px" }}
+                          placeholder="🔧"
+                          value={aiToolEditData.icon}
+                          onChange={e => setAiToolEditData(prev => ({ ...prev, icon: e.target.value }))}
+                        />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>서비스명</div>
+                        <input
+                          style={styles.input}
+                          placeholder="예: ChatGPT로 작성"
+                          value={aiToolEditData.label}
+                          onChange={e => setAiToolEditData(prev => ({ ...prev, label: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>이동 링크 (URL)</div>
                       <input
                         style={styles.input}
-                        placeholder="예: ChatGPT로 작성"
-                        value={aiToolEditData.label}
-                        onChange={e => setAiToolEditData(prev => ({ ...prev, label: e.target.value }))}
+                        placeholder="https://..."
+                        value={aiToolEditData.url}
+                        onChange={e => setAiToolEditData(prev => ({ ...prev, url: e.target.value }))}
                       />
                     </div>
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>서비스 설명</div>
+                      <input
+                        style={styles.input}
+                        placeholder="예: 내 GPTs 활용"
+                        value={aiToolEditData.desc}
+                        onChange={e => setAiToolEditData(prev => ({ ...prev, desc: e.target.value }))}
+                      />
+                    </div>
+                    <div style={{ display: "flex", gap: 6, justifyContent: "space-between" }}>
+                      <div>
+                        {aiToolEditMode !== "add" && (
+                          <button
+                            style={{ ...styles.btnSm(false), color: "#ef4444", borderColor: "#fecaca" }}
+                            onClick={() => { deleteAiTool(aiToolEditMode); setAiToolEditMode(null); }}
+                          >삭제</button>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button style={styles.btnSm(false)} onClick={() => setAiToolEditMode(null)}>취소</button>
+                        <button style={styles.btnSm(true)} onClick={saveAiTool}>저장</button>
+                      </div>
+                    </div>
                   </div>
-                  <div style={{ marginBottom: 8 }}>
-                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>이동 링크 (URL)</div>
-                    <input
-                      style={styles.input}
-                      placeholder="https://..."
-                      value={aiToolEditData.url}
-                      onChange={e => setAiToolEditData(prev => ({ ...prev, url: e.target.value }))}
-                    />
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* ─── 초안 자동 생성 ─── */}
+          <div style={{ ...styles.card, marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
+              <div style={styles.cardTitle}>✨ 초안 자동 생성</div>
+              <span style={{ fontSize: 12, color: "#94a3b8", marginLeft: 8 }}>마스터 글을 기반으로 각 SNS에 맞는 초안을 자동으로 작성합니다.</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 0, alignItems: "stretch", border: "1px solid #e8eaf0", borderRadius: 10, overflow: "hidden" }}>
+
+              {/* 왼쪽: 프롬프트 목록 */}
+              <div style={{ borderRight: "1px solid #e8eaf0", background: "#f8fafc" }}>
+                <div style={{ padding: "12px 14px", borderBottom: "1px solid #e8eaf0" }}>
+                  <button
+                    style={{
+                      width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px dashed #c7d2fe",
+                      background: selectedPromptId === "new" ? "#ede9fe" : "#fff",
+                      color: "#6366f1", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                      display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                    }}
+                    onClick={() => { setSelectedPromptId("new"); setDraftPromptEdit({ title: "", content: "" }); }}
+                  >
+                    + 새 프롬프트 만들기
+                  </button>
+                </div>
+                <div style={{ overflowY: "auto", maxHeight: 340 }}>
+                  {draftPrompts.length === 0 ? (
+                    <div style={{ padding: "24px 14px", fontSize: 11, color: "#94a3b8", textAlign: "center" }}>
+                      저장된 프롬프트가 없습니다.
+                    </div>
+                  ) : (
+                    draftPrompts.map((p) => (
+                      <div
+                        key={p.id}
+                        onClick={() => { setSelectedPromptId(p.id); setDraftPromptEdit({ title: p.title, content: p.content }); }}
+                        style={{
+                          padding: "12px 14px", cursor: "pointer", borderBottom: "1px solid #e8eaf0",
+                          background: selectedPromptId === p.id ? "#ede9fe" : "transparent",
+                          borderLeft: selectedPromptId === p.id ? "3px solid #6366f1" : "3px solid transparent",
+                          transition: "all 0.12s",
+                        }}
+                        onMouseEnter={e => { if (selectedPromptId !== p.id) e.currentTarget.style.background = "#f1f5f9"; }}
+                        onMouseLeave={e => { if (selectedPromptId !== p.id) e.currentTarget.style.background = "transparent"; }}
+                      >
+                        <div style={{ fontSize: 12, fontWeight: 600, color: selectedPromptId === p.id ? "#4f46e5" : "#374151", marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title}</div>
+                        <div style={{ fontSize: 11, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.content}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* 오른쪽: 편집 + 생성 */}
+              <div style={{ padding: 20 }}>
+                {selectedPromptId === null ? (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", minHeight: 200, color: "#94a3b8", fontSize: 13 }}>
+                    왼쪽에서 프롬프트를 선택하거나 새로 만드세요.
                   </div>
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>서비스 설명</div>
-                    <input
-                      style={styles.input}
-                      placeholder="예: 내 GPTs 활용"
-                      value={aiToolEditData.desc}
-                      onChange={e => setAiToolEditData(prev => ({ ...prev, desc: e.target.value }))}
-                    />
-                  </div>
-                  <div style={{ display: "flex", gap: 6, justifyContent: "space-between" }}>
-                    <div>
-                      {aiToolEditMode !== "add" && (
+                ) : (
+                  <>
+                    {/* 제목 + 버튼 */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+                        {selectedPromptId === "new" ? "새 프롬프트" : "프롬프트 수정"}
+                      </div>
+                      <div style={{ flex: 1 }} />
+                      {selectedPromptId !== "new" && (
                         <button
-                          style={{ ...styles.btnSm(false), color: "#ef4444", borderColor: "#fecaca" }}
-                          onClick={() => { deleteAiTool(aiToolEditMode); setAiToolEditMode(null); }}
+                          style={{ ...styles.btnSm(false), color: "#ef4444", borderColor: "#fecaca", fontSize: 11 }}
+                          onClick={() => {
+                            const updated = draftPrompts.filter(x => x.id !== selectedPromptId);
+                            saveDraftPromptsToDb(updated);
+                            if (updated.length > 0) { setSelectedPromptId(updated[0].id); setDraftPromptEdit({ title: updated[0].title, content: updated[0].content }); }
+                            else { setSelectedPromptId("new"); setDraftPromptEdit({ title: "", content: "" }); }
+                          }}
                         >삭제</button>
                       )}
+                      <button
+                        style={{ ...styles.btnSm(true), fontSize: 11 }}
+                        onClick={async () => {
+                          if (!draftPromptEdit.title.trim()) {
+                            alert("프롬프트 제목을 입력해주세요.");
+                            return;
+                          }
+                          if (!draftPromptEdit.content.trim()) {
+                            alert("프롬프트 내용을 입력해주세요.");
+                            return;
+                          }
+                          let updated;
+                          let savedId;
+                          if (selectedPromptId === "new") {
+                            savedId = Date.now();
+                            updated = [...draftPrompts, { id: savedId, title: draftPromptEdit.title.trim(), content: draftPromptEdit.content.trim() }];
+                          } else {
+                            savedId = selectedPromptId;
+                            updated = draftPrompts.map(x => x.id === selectedPromptId ? { ...x, title: draftPromptEdit.title.trim(), content: draftPromptEdit.content.trim() } : x);
+                          }
+                          try {
+                            await saveDraftPromptsToDb(updated);
+                            setSelectedPromptId(savedId);
+                            alert("프롬프트가 저장되었습니다.");
+                          } catch (e) {
+                            alert(`저장 실패: ${e.message}`);
+                          }
+                        }}
+                      >💾 저장</button>
                     </div>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button style={styles.btnSm(false)} onClick={() => setAiToolEditMode(null)}>취소</button>
-                      <button style={styles.btnSm(true)} onClick={saveAiTool}>저장</button>
+
+                    {/* 프롬프트 입력 */}
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>프롬프트 제목</div>
+                    <input
+                      style={{ ...styles.input, marginBottom: 12 }}
+                      placeholder="예: 기본 SNS 최적화"
+                      value={draftPromptEdit.title}
+                      onChange={e => setDraftPromptEdit(prev => ({ ...prev, title: e.target.value }))}
+                    />
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>프롬프트 내용</div>
+                    <textarea
+                      style={{ ...styles.textarea, minHeight: 90, fontSize: 12, marginBottom: 16 }}
+                      placeholder="각 SNS 플랫폼의 특성에 맞게 최적화해주세요..."
+                      value={draftPromptEdit.content}
+                      onChange={e => setDraftPromptEdit(prev => ({ ...prev, content: e.target.value }))}
+                    />
+
+                    {/* 구분선 */}
+                    <div style={{ borderTop: "1px solid #f1f5f9", marginBottom: 14 }} />
+
+                    {/* 플랫폼 선택 */}
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 8 }}>생성할 플랫폼 선택</div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+                      {draftPlatformOrder.map(p => (
+                        <button
+                          key={p}
+                          onClick={() => setDraftGenPlatforms(prev =>
+                            prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]
+                          )}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 4,
+                            padding: "4px 10px", borderRadius: 100, border: "none", cursor: "pointer",
+                            fontSize: 11, fontWeight: 600,
+                            background: draftGenPlatforms.includes(p) ? PLATFORMS[p].color : "#f1f5f9",
+                            color: draftGenPlatforms.includes(p) ? "#fff" : "#94a3b8",
+                            transition: "all 0.15s",
+                          }}
+                        >
+                          {PLATFORMS[p].icon} {PLATFORMS[p].name}
+                        </button>
+                      ))}
                     </div>
-                  </div>
-                </div>
-              )}
+
+                    {/* 초안 생성 버튼 */}
+                    <button
+                      style={{
+                        ...styles.btn(true), width: "100%", justifyContent: "center",
+                        background: isDraftGenerating ? "#94a3b8" : "linear-gradient(135deg, #6366f1, #8b5cf6)",
+                        borderColor: "transparent",
+                        opacity: isDraftGenerating ? 0.8 : 1,
+                        pointerEvents: isDraftGenerating ? "none" : "auto",
+                      }}
+                      onClick={handleDraftGenerate}
+                    >{isDraftGenerating ? "✨ 생성 중..." : "✨ 초안 생성하기"}</button>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1415,6 +1661,24 @@ export default function SNSDashboard() {
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
               <div style={styles.cardTitle}>📱 SNS 별 글쓰기 및 발행</div>
               <div style={{ fontSize: 11, color: "#94a3b8" }}>⠿ 드래그로 순서 변경 · 자동 저장</div>
+            </div>
+            {/* 발행할 플랫폼 선택 (상단 이동) */}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14, padding: "10px 12px", background: "#f8fafc", borderRadius: 8, border: "1px solid #e8eaf0" }}>
+              {draftPlatformOrder.map(p => (
+                <button
+                  key={p}
+                  onClick={() => togglePlatform(p)}
+                  style={{
+                    ...styles.btnSm(content.platforms.includes(p)),
+                    background: content.platforms.includes(p) ? PLATFORMS[p].color : "#fff",
+                    color: content.platforms.includes(p) ? "#fff" : "#64748b",
+                    border: `1px solid ${content.platforms.includes(p) ? PLATFORMS[p].color : "#d1d5db"}`,
+                    fontSize: 12,
+                  }}
+                >
+                  {PLATFORMS[p].icon} {PLATFORMS[p].name}
+                </button>
+              ))}
             </div>
             <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>각 SNS에 맞는 글을 작성하고 발행 여부를 체크하세요.</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
@@ -1475,61 +1739,72 @@ export default function SNSDashboard() {
 
           {/* 발행 설정 */}
           <div style={styles.card}>
-            <div style={styles.cardTitle}>📤 발행 설정</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 10 }}>발행할 플랫폼</div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {draftPlatformOrder.map(p => (
-                    <button
-                      key={p}
-                      onClick={() => togglePlatform(p)}
-                      style={{
-                        ...styles.btnSm(content.platforms.includes(p)),
-                        background: content.platforms.includes(p) ? PLATFORMS[p].color : "#f1f5f9",
-                        color: content.platforms.includes(p) ? "#fff" : "#64748b",
-                        border: "none",
-                      }}
-                    >
-                      {PLATFORMS[p].icon} {PLATFORMS[p].name}
-                    </button>
-                  ))}
+            <div style={styles.cardTitle}>📤 발행 유형</div>
+            <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+              {/* 즉시 발행 카드 */}
+              <div
+                onClick={() => setPublishMode("now")}
+                style={{
+                  flex: 1, padding: "14px 16px", borderRadius: 10, cursor: "pointer",
+                  border: `2px solid ${publishMode === "now" ? "#6366f1" : "#e2e8f0"}`,
+                  background: publishMode === "now" ? "#eef2ff" : "#f8fafc",
+                  transition: "all 0.15s",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontSize: 18 }}>📤</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: publishMode === "now" ? "#6366f1" : "#374151" }}>즉시 발행</span>
+                  {publishMode === "now" && <span style={{ marginLeft: "auto", width: 8, height: 8, borderRadius: "50%", background: "#6366f1", display: "inline-block" }} />}
                 </div>
+                <div style={{ fontSize: 11, color: "#94a3b8" }}>저장과 동시에 SNS에 바로 게시합니다</div>
               </div>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 10 }}>발행 시간</div>
-                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                  {[{ key: "now", label: "즉시 발행" }, { key: "schedule", label: "예약 발행" }].map(m => (
-                    <button key={m.key} onClick={() => setPublishMode(m.key)} style={styles.btnSm(publishMode === m.key)}>
-                      {m.label}
-                    </button>
-                  ))}
+              {/* 예약 발행 카드 */}
+              <div
+                onClick={() => setPublishMode("schedule")}
+                style={{
+                  flex: 1, padding: "14px 16px", borderRadius: 10, cursor: "pointer",
+                  border: `2px solid ${publishMode === "schedule" ? "#f59e0b" : "#e2e8f0"}`,
+                  background: publishMode === "schedule" ? "#fffbeb" : "#f8fafc",
+                  transition: "all 0.15s",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontSize: 18 }}>🕐</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: publishMode === "schedule" ? "#d97706" : "#374151" }}>예약 발행</span>
+                  {publishMode === "schedule" && <span style={{ marginLeft: "auto", width: 8, height: 8, borderRadius: "50%", background: "#f59e0b", display: "inline-block" }} />}
                 </div>
+                <div style={{ fontSize: 11, color: "#94a3b8" }}>지정한 날짜·시간에 자동으로 게시합니다</div>
                 {publishMode === "schedule" && (
                   <input
                     type="datetime-local"
-                    style={styles.input}
+                    style={{ ...styles.input, marginTop: 10, fontSize: 12 }}
                     value={content.scheduledAt ? content.scheduledAt.replace(" ", "T") : ""}
                     onChange={e => updateContent("scheduledAt", e.target.value.replace("T", " "))}
+                    onClick={e => e.stopPropagation()}
                   />
                 )}
               </div>
             </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20, paddingTop: 16, borderTop: "1px solid #f1f5f9" }}>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 16, borderTop: "1px solid #f1f5f9" }}>
               <button style={styles.btn(false)} onClick={() => setContentsView("list")}>취소</button>
               <button style={styles.btn(false)} onClick={() => handleSaveContent("draft")}>
                 <Icons.Download /> 초안 저장
               </button>
-              <button
-                style={{
-                  ...styles.btn(true),
-                  background: publishMode === "now" ? "#6366f1" : "#f59e0b",
-                  borderColor: publishMode === "now" ? "#6366f1" : "#f59e0b",
-                }}
-                onClick={() => handleSaveContent(publishMode === "now" ? "published" : "scheduled")}
-              >
-                {publishMode === "now" ? <><Icons.Send /> 지금 발행</> : <><Icons.Clock /> 예약 등록</>}
-              </button>
+              {publishMode === "now" ? (
+                <button
+                  style={{ ...styles.btn(true), background: "#6366f1", borderColor: "#6366f1" }}
+                  onClick={() => handleSaveContent("published")}
+                >
+                  <Icons.Send /> 지금 발행
+                </button>
+              ) : (
+                <button
+                  style={{ ...styles.btn(true), background: "#f59e0b", borderColor: "#f59e0b" }}
+                  onClick={() => handleSaveContent("scheduled")}
+                >
+                  <Icons.Clock /> 예약 등록
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1570,9 +1845,10 @@ export default function SNSDashboard() {
     };
     const handleCalToday = () => { setContentsCalYear(2026); setContentsCalMonth(2); setContentsCalSelectedDay(22); };
 
-    const getPostsForDate = (dateStr) => contentsList.filter(c =>
-      c.scheduledAt?.startsWith(dateStr) && c.platforms.some(p => contentsCalPlatforms.includes(p))
-    );
+    const getPostsForDate = (dateStr) => contentsList.filter(c => {
+      const matchDate = c.firstPublishedAt?.startsWith(dateStr) || (!c.firstPublishedAt && c.scheduledAt?.startsWith(dateStr));
+      return matchDate && c.platforms.some(p => contentsCalPlatforms.includes(p));
+    });
     const buildMonthGrid = () => {
       const firstDay = getFirstDayOfMonth(contentsCalYear, contentsCalMonth);
       const daysCount = getDaysInMonth(contentsCalYear, contentsCalMonth);
@@ -1595,14 +1871,16 @@ export default function SNSDashboard() {
     const togglePlatformFilter = (k) => setSearchPlatforms(prev => prev.includes(k) ? prev.filter(p => p !== k) : [...prev, k]);
     const toggleStatusFilter = (k) => setSearchStatuses(prev => prev.includes(k) ? prev.filter(s => s !== k) : [...prev, k]);
 
-    // 필터링
+    // 필터링 (appliedSearch 기준)
+    const { title: af_title, platforms: af_platforms, statuses: af_statuses, regDate: af_regDate, pubDate: af_pubDate, registrant: af_registrant } = appliedSearch;
     const filtered = contentsList.filter(c => {
-      if (searchTitle && !c.title.toLowerCase().includes(searchTitle.toLowerCase())) return false;
-      if (searchPlatforms.length > 0 && !c.platforms.some(p => searchPlatforms.includes(p))) return false;
-      if (searchStatuses.length > 0 && !searchStatuses.includes(c.status)) return false;
-      if (searchRegistrant && !(c.registrant || "").toLowerCase().includes(searchRegistrant.toLowerCase())) return false;
-      if (searchPubDate && !(c.scheduledAt || "").startsWith(searchPubDate.replace("T", " "))) return false;
-      if (searchRegDate && !(c.registeredAt || "").startsWith(searchRegDate.slice(0, 10))) return false;
+      if (af_title && !c.title.toLowerCase().includes(af_title.toLowerCase())) return false;
+      const allSelected = ALL_PLATFORMS.every(p => af_platforms.includes(p));
+      if (!allSelected && !c.platforms.some(p => af_platforms.includes(p))) return false;
+      if (af_statuses.length > 0 && !af_statuses.includes(c.status)) return false;
+      if (af_registrant && !(c.registrant || "").toLowerCase().includes(af_registrant.toLowerCase())) return false;
+      if (af_regDate && !(c.firstPublishedAt || "").startsWith(af_regDate)) return false;
+      if (af_pubDate && !(c.updatedAt || "").startsWith(af_pubDate)) return false;
       return true;
     });
 
@@ -1626,38 +1904,38 @@ export default function SNSDashboard() {
         {/* 검색 조건 */}
         <div style={{ ...styles.card, marginBottom: 16 }}>
           <div style={{ ...styles.cardTitle, marginBottom: 16 }}>검색 조건</div>
-          {/* 1행: 제목 / 등록일 / 발행일 / 등록자 */}
+          {/* 1행: 제목 / 최초 발행일 / 수정일 / 등록자 */}
           <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
             <div>
               <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>제목</div>
               <input style={styles.input} placeholder="제목 검색..." value={searchTitle} onChange={e => setSearchTitle(e.target.value)} />
             </div>
             <div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>글 등록일</div>
-              <input type="datetime-local" style={{ ...styles.input, fontSize: 12 }} value={searchRegDate} onChange={e => setSearchRegDate(e.target.value)} />
+              <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>최초 발행일</div>
+              <input type="date" style={{ ...styles.input, fontSize: 12 }} value={searchRegDate} onChange={e => setSearchRegDate(e.target.value)} />
             </div>
             <div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>글 발행일</div>
-              <input type="datetime-local" style={{ ...styles.input, fontSize: 12 }} value={searchPubDate} onChange={e => setSearchPubDate(e.target.value)} />
+              <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>수정일</div>
+              <input type="date" style={{ ...styles.input, fontSize: 12 }} value={searchPubDate} onChange={e => setSearchPubDate(e.target.value)} />
             </div>
             <div>
               <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>등록자</div>
               <input style={styles.input} placeholder="등록자 검색..." value={searchRegistrant} onChange={e => setSearchRegistrant(e.target.value)} />
             </div>
           </div>
-          {/* 2행: 플랫폼 체크박스 */}
+          {/* 2행: 플랫폼 */}
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 8 }}>플랫폼</div>
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-              {Object.entries(PLATFORMS).map(([k, v]) => (
-                <label key={k} style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
-                  <input type="checkbox" checked={searchPlatforms.includes(k)} onChange={() => togglePlatformFilter(k)}
-                    style={{ width: 14, height: 14, accentColor: v.color, cursor: "pointer" }} />
-                  <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 500, color: searchPlatforms.includes(k) ? v.color : "#374151" }}>
-                    <span style={{ fontSize: 15 }}>{v.icon}</span>{v.name}
-                  </span>
-                </label>
-              ))}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {Object.entries(PLATFORMS).map(([k, v]) => {
+                const on = searchPlatforms.includes(k);
+                return (
+                  <button key={k} onClick={() => togglePlatformFilter(k)}
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 12px", borderRadius: 100, fontSize: 12, fontWeight: 600, cursor: "pointer", border: `1px solid ${on ? v.color : "#d1d5db"}`, background: on ? v.color : "#fff", color: on ? "#fff" : "#374151", transition: "all 0.15s" }}>
+                    {v.icon} {v.name}
+                  </button>
+                );
+              })}
             </div>
           </div>
           {/* 3행: 상태 체크박스 */}
@@ -1680,10 +1958,15 @@ export default function SNSDashboard() {
           </div>
           {/* 4행: 버튼 */}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 12, borderTop: "1px solid #f1f5f9" }}>
-            <button style={styles.btn(false)} onClick={() => { setSearchTitle(""); setSearchPlatforms([]); setSearchStatuses([]); setSearchRegDate(""); setSearchPubDate(""); setSearchRegistrant(""); }}>
+            <button style={styles.btn(false)} onClick={() => {
+              setSearchTitle(""); setSearchPlatforms(ALL_PLATFORMS); setSearchStatuses([]); setSearchRegDate(""); setSearchPubDate(""); setSearchRegistrant("");
+              setAppliedSearch({ title: "", platforms: ALL_PLATFORMS, statuses: [], regDate: "", pubDate: "", registrant: "" });
+            }}>
               초기화
             </button>
-            <button style={styles.btn(true)}>
+            <button style={styles.btn(true)} onClick={() => {
+              setAppliedSearch({ title: searchTitle, platforms: searchPlatforms, statuses: searchStatuses, regDate: searchRegDate, pubDate: searchPubDate, registrant: searchRegistrant });
+            }}>
               <Icons.Search /> 검색
             </button>
           </div>
@@ -1703,7 +1986,7 @@ export default function SNSDashboard() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr style={{ borderBottom: "2px solid #e8eaf0" }}>
-                    {["No", "제목", "플랫폼", "등록자", "등록일", "발행일", "상태", "관리"].map(h => (
+                    {["No", "제목", "플랫폼", "등록자", "최초 발행일", "수정일", "상태", "관리"].map(h => (
                       <th key={h} style={{ padding: "10px 12px", textAlign: h === "관리" ? "center" : "left", fontSize: 11, fontWeight: 600, color: "#94a3b8", whiteSpace: "nowrap", textTransform: "uppercase" }}>{h}</th>
                     ))}
                   </tr>
@@ -1728,9 +2011,11 @@ export default function SNSDashboard() {
                         </div>
                       </td>
                       <td style={{ padding: "12px 12px", color: "#64748b", whiteSpace: "nowrap" }}>{content.registrant || "-"}</td>
-                      <td style={{ padding: "12px 12px", color: "#64748b", whiteSpace: "nowrap" }}>{content.registeredAt || "-"}</td>
                       <td style={{ padding: "12px 12px", color: "#64748b", whiteSpace: "nowrap" }}>
-                        {content.scheduledAt ? content.scheduledAt.slice(0, 10) : <span style={{ color: "#cbd5e1" }}>미설정</span>}
+                        {content.firstPublishedAt ? content.firstPublishedAt.slice(0, 16) : <span style={{ color: "#cbd5e1" }}>-</span>}
+                      </td>
+                      <td style={{ padding: "12px 12px", color: "#64748b", whiteSpace: "nowrap" }}>
+                        {content.updatedAt ? content.updatedAt.slice(0, 16) : <span style={{ color: "#cbd5e1" }}>-</span>}
                       </td>
                       <td style={{ padding: "12px 12px", whiteSpace: "nowrap" }}>
                         <span style={styles.badge(STATUS_COLORS[content.status])}>{STATUS_LABELS[content.status]}</span>
@@ -1742,8 +2027,10 @@ export default function SNSDashboard() {
                             편집
                           </button>
                           <button style={{ ...styles.btnSm(false), fontSize: 11, padding: "4px 8px", color: "#ef4444", borderColor: "#fecaca" }}
-                            onClick={() => {
+                            onClick={async () => {
                               if (window.confirm(`"${content.title || "(제목 없음)"}"을(를) 삭제하시겠습니까?`)) {
+                                const { error } = await supabase.from("contents").delete().eq("id", content.id);
+                                if (error) { alert("삭제 오류: " + error.message); return; }
                                 setContentsList(prev => prev.filter(c => c.id !== content.id));
                               }
                             }}>
@@ -1751,24 +2038,17 @@ export default function SNSDashboard() {
                           </button>
                           <button style={{ ...styles.btnSm(false), fontSize: 11, padding: "4px 8px", background: "#6366f1", color: "#fff", border: "none" }}
                             onClick={async () => {
-                              if (!window.confirm("즉시 SNS에 발행하시겠습니까?")) return;
-                              const EDGE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/post-x`;
                               // X 발행
                               if (content.platforms?.includes("twitter") && content.platformDrafts?.twitter?.trim()) {
                                 try {
-                                  const resp = await fetch(EDGE_URL, {
-                                    method: "POST",
-                                    headers: {
-                                      "Content-Type": "application/json",
-                                      "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-                                    },
-                                    body: JSON.stringify({ text: content.platformDrafts.twitter }),
+                                  const { data, error } = await supabase.functions.invoke("post-x", {
+                                    body: { text: content.platformDrafts.twitter },
                                   });
-                                  const data = await resp.json();
-                                  if (data.success) {
+                                  if (error) throw new Error(error.message);
+                                  if (data?.success) {
                                     alert(`✅ X 발행 완료!\n${data.url}`);
                                   } else {
-                                    alert(`❌ X 발행 실패: ${data.error}`);
+                                    alert(`❌ X 발행 실패: ${data?.error}`);
                                     return;
                                   }
                                 } catch (e) {
@@ -1776,7 +2056,14 @@ export default function SNSDashboard() {
                                   return;
                                 }
                               }
-                              setContentsList(prev => prev.map(c => c.id === content.id ? { ...c, status: "published" } : c));
+                              const now = new Date().toISOString().replace("T", " ").slice(0, 16);
+                              const updateFields = { status: "published" };
+                              if (!content.firstPublishedAt) updateFields.first_published_at = now;
+                              else updateFields.updated_at = now;
+                              const { error } = await supabase.from("contents").update(updateFields).eq("id", content.id);
+                              if (error) { alert("발행 상태 저장 오류: " + error.message); return; }
+                              const updated = { ...content, status: "published", firstPublishedAt: content.firstPublishedAt || now, updatedAt: content.firstPublishedAt ? now : content.updatedAt };
+                              setContentsList(prev => prev.map(c => c.id === content.id ? updated : c));
                             }}>
                             즉시발행
                           </button>
@@ -1821,13 +2108,16 @@ export default function SNSDashboard() {
           {/* SNS 필터 — 연월 바로 아래 */}
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", padding: "10px 0 14px" }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", marginRight: 2 }}>SNS:</span>
-            {Object.entries(PLATFORMS).map(([k, v]) => (
-              <button key={k}
-                onClick={() => setContentsCalPlatforms(prev => prev.includes(k) ? prev.filter(p => p !== k) : [...prev, k])}
-                style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 100, fontSize: 11, fontWeight: 600, border: `1px solid ${contentsCalPlatforms.includes(k) ? v.color : "#e2e8f0"}`, cursor: "pointer", background: contentsCalPlatforms.includes(k) ? v.color + "18" : "#fafbfd", color: contentsCalPlatforms.includes(k) ? v.color : "#94a3b8", transition: "all 0.15s" }}>
-                {v.icon} {v.name}
-              </button>
-            ))}
+            {Object.entries(PLATFORMS).map(([k, v]) => {
+              const on = contentsCalPlatforms.includes(k);
+              return (
+                <button key={k}
+                  onClick={() => setContentsCalPlatforms(prev => on ? prev.filter(p => p !== k) : [...prev, k])}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 11px", borderRadius: 100, fontSize: 11, fontWeight: 600, border: `1px solid ${on ? v.color : "#d1d5db"}`, cursor: "pointer", background: on ? v.color : "#fff", color: on ? "#fff" : "#374151", transition: "all 0.15s" }}>
+                  {v.icon} {v.name}
+                </button>
+              );
+            })}
           </div>
 
           {/* 월별 그리드 */}
@@ -2502,6 +2792,14 @@ export default function SNSDashboard() {
           { key: "spreadsheetId",      label: "Spreadsheet ID",         placeholder: "1IjmqpRxS_00CLrN...", secret: false },
           { key: "serviceAccountEmail", label: "Service Account Email",  placeholder: "xxx@project.iam.gserviceaccount.com", secret: false },
           { key: "privateKey",         label: "Private Key",            placeholder: "-----BEGIN RSA PRIVATE KEY-----", secret: true },
+        ],
+      },
+      openai: {
+        label: "OpenAI", icon: "🤖", color: "#10a37f", url: "https://platform.openai.com",
+        note: "platform.openai.com → API keys → Create new secret key",
+        desc: "OpenAI의 GPT 모델을 활용해 마스터 글을 각 SNS 플랫폼에 맞는 초안으로 자동 변환합니다. API 키를 저장하면 [초안 생성하기] 버튼이 실제 AI로 동작합니다.",
+        fields: [
+          { key: "apiKey", label: "API Key", placeholder: "sk-proj-xxxxxxxxxxxxxxxxxxxx", secret: true },
         ],
       },
     };
