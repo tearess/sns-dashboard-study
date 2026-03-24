@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { supabase } from "./supabase.js";
+import { supabase, DEMO_MODE } from "./supabase.js";
 
 // --- Icons (inline SVG components) ---
 const Icons = {
@@ -333,6 +333,10 @@ export default function SNSDashboard() {
 
   // 콘텐츠 목록 불러오기
   useEffect(() => {
+    if (DEMO_MODE) {
+      setContentsList(MOCK_CONTENTS_DATA);
+      return;
+    }
     supabase.from("contents").select("*").order("id", { ascending: false })
       .then(({ data, error }) => {
         if (error) { console.error("콘텐츠 불러오기 오류:", error); return; }
