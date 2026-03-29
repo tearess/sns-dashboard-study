@@ -472,7 +472,7 @@ export default function SNSDashboard() {
 
   // SNS 연동 관리 상태
   const [snsCredentials, setSnsCredentials] = useState({
-    facebook:  { pageAccessToken: "", pageId: "" },
+    facebook:  { appId: "", appSecret: "", accessToken: "", pageId: "" },
     twitter:   { bearerToken: "", consumerKey: "", consumerKeySecret: "", accessToken: "", accessTokenSecret: "", clientId: "", clientSecret: "" },
     threads:   { appId: "", accessToken: "" },
     instagram: { accessToken: "", userId: "" },
@@ -1322,6 +1322,43 @@ ${platformList}
             }
           } else if (toSave.platforms?.includes("twitter")) {
             alert("X 글을 입력해주세요.");
+            return;
+          }
+
+          // Facebook 발행
+          if (toSave.platforms?.includes("facebook") && toSave.platformDrafts?.facebook?.trim()) {
+            const fb = snsCredentials.facebook;
+            if (!fb?.accessToken?.trim() || !fb?.pageId?.trim()) {
+              alert("Facebook 발행에 필요한 정보가 없습니다.\n연동 관리 > SNS 연동 > Facebook에서\n액세스 토큰과 페이지 ID를 저장해주세요.");
+              return;
+            }
+            try {
+              const resp = await fetch(
+                `https://graph.facebook.com/v19.0/${fb.pageId}/feed`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    message: toSave.platformDrafts.facebook,
+                    access_token: fb.accessToken,
+                  }),
+                }
+              );
+              const data = await resp.json();
+              if (data.id) {
+                results.facebook = `발행완료 ${new Date().toLocaleDateString("ko-KR")} | ${data.id}`;
+                alert(`✅ Facebook 발행 완료!\n게시글 ID: ${data.id}`);
+              } else {
+                const msg = data.error?.message || JSON.stringify(data);
+                results.facebook = `오류: ${msg}`;
+                alert(`❌ Facebook 발행 실패: ${msg}`);
+              }
+            } catch (e) {
+              results.facebook = `오류: ${e.message}`;
+              alert(`❌ Facebook 발행 오류: ${e.message}`);
+            }
+          } else if (toSave.platforms?.includes("facebook")) {
+            alert("Facebook 글을 입력해주세요.");
             return;
           }
 
@@ -2858,10 +2895,12 @@ ${platformList}
       },
       { id: "facebook",
         label: "Facebook", icon: "👤", color: "#1877F2", url: "https://developers.facebook.com",
-        note: "Meta 개발자 콘솔 → 앱 → 페이지 액세스 토큰 생성",
+        note: "Meta 개발자 콘솔 → 내 앱 → 앱 설정 → 기본 설정",
         fields: [
-          { key: "pageAccessToken", label: "Page Access Token", placeholder: "EAAxxxxxx...",    secret: true },
-          { key: "pageId",          label: "Page ID",           placeholder: "123456789012345", secret: false },
+          { key: "appId",       label: "앱 ID",          placeholder: "123456789012345", secret: true },
+          { key: "appSecret",   label: "앱 시크릿 코드",  placeholder: "xxxxxxxxxxxxxxxx", secret: true },
+          { key: "accessToken", label: "액세스 토큰",     placeholder: "EAAxxxxxx...",    secret: true },
+          { key: "pageId",      label: "페이지 ID",       placeholder: "123456789012345", secret: true },
         ],
       },
       { id: "instagram",
@@ -3169,10 +3208,6 @@ ${platformList}
                 onFieldChange: (fieldKey, value) => handleCredentialChange(platform.id, fieldKey, value),
                 onSave: () => handleSave(platform.id),
                 tokenPrefix: platform.id,
-                draggable: true,
-                onDragStart: () => handleDragStart(platform.id),
-                onDragOver: handleDragOver,
-                onDrop: () => handleDrop(platform.id),
               });
             })}
           </div>
