@@ -3499,9 +3499,6 @@ ${platformList}
               회원가입
             </span>
           </div>
-          <div style={{ marginTop: 16, padding: "10px 14px", borderRadius: 8, background: "#f8fafc", fontSize: 11, color: "#94a3b8" }}>
-            테스트 계정: admin@test.com / 1234
-          </div>
         </div>
       </div>
     );
