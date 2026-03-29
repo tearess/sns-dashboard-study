@@ -418,10 +418,11 @@ export default function SNSDashboard() {
   const [contentsCalSelectedDay, setContentsCalSelectedDay] = useState(22); // 오늘 날짜
   const [contentsCalPlatforms, setContentsCalPlatforms] = useState(["twitter", "youtube", "facebook", "instagram", "threads"]);
 
-  // 인증 상태 (Supabase Auth 연동 전 mock)
-  const [authState, setAuthState] = useState("approved"); // "logged-out" | "signup" | "pending" | "approved"
+  // 인증 상태 (Supabase Auth 연동)
+  const [authState, setAuthState] = useState("loading"); // "loading" | "logged-out" | "signup" | "pending" | "approved"
   const [authForm, setAuthForm] = useState({ email: "", password: "", name: "" });
   const [authError, setAuthError] = useState("");
+  const [currentUser, setCurrentUser] = useState(null);
 
   // 회원 관리
   const [membersList, setMembersList] = useState([]);
@@ -481,9 +482,33 @@ export default function SNSDashboard() {
   const [snsSaveStatus, setSnsSaveStatus] = useState({}); // { facebook: "saved" | "saving" | null }
   const [showTokens, setShowTokens] = useState({});       // { "facebook-pageAccessToken": true }
 
-  // 앱 시작 시 DB에서 자격증명 로드
+  // 앱 시작 시 세션 확인 + DB에서 자격증명 로드
   useEffect(() => {
     const loadCredentials = async () => {
+      // DEMO_MODE이면 세션 확인 없이 바로 승인 상태로
+      if (DEMO_MODE) {
+        setAuthState("approved");
+      } else {
+        // Supabase 세션 확인
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          setAuthState("logged-out");
+          return;
+        }
+        // members 테이블에서 승인 상태 확인
+        const { data: memberData } = await supabase
+          .from("members")
+          .select("*")
+          .eq("email", session.user.email)
+          .single();
+        if (!memberData || memberData.approval_status !== "approved") {
+          setAuthState("pending");
+          return;
+        }
+        setCurrentUser(memberData);
+        setAuthState("approved");
+      }
+
       const [{ data: snsData }, { data: svcData }, { data: membersData }] = await Promise.all([
         supabase.from("sns_credentials").select("platform, credentials"),
         supabase.from("service_credentials").select("service, credentials"),
@@ -3393,26 +3418,58 @@ ${platformList}
   // ========================
   //  AUTH SCREENS
   // ========================
-  const handleLogin = () => {
+  const handleLogin = async () => {
     setAuthError("");
     if (!authForm.email || !authForm.password) { setAuthError("이메일과 비밀번호를 입력해주세요."); return; }
-    // mock: admin@test.com / 1234 → 즉시 승인
-    if (authForm.email === "admin@test.com" && authForm.password === "1234") {
-      setAuthState("approved");
+    const { error } = await supabase.auth.signInWithPassword({
+      email: authForm.email,
+      password: authForm.password,
+    });
+    if (error) { setAuthError("이메일 또는 비밀번호가 올바르지 않습니다."); return; }
+    // 로그인 성공 후 승인 상태 확인
+    const { data: memberData } = await supabase
+      .from("members")
+      .select("*")
+      .eq("email", authForm.email)
+      .single();
+    if (!memberData || memberData.approval_status !== "approved") {
+      setAuthState("pending");
     } else {
-      setAuthError("이메일 또는 비밀번호가 올바르지 않습니다.");
+      setCurrentUser(memberData);
+      setAuthState("approved");
     }
   };
 
-  const handleSignup = () => {
+  const handleSignup = async () => {
     setAuthError("");
     if (!authForm.name || !authForm.email || !authForm.password) { setAuthError("모든 항목을 입력해주세요."); return; }
-    // mock: 가입 후 pending 상태
-    setMembersList(prev => [...prev, { id: Date.now(), name: authForm.name, email: authForm.email, joinedAt: new Date().toISOString().slice(0, 10), approvalStatus: "pending", role: "operator" }]);
+    if (authForm.password.length < 8) { setAuthError("비밀번호는 8자 이상이어야 합니다."); return; }
+    // Supabase Auth 계정 생성
+    const { error } = await supabase.auth.signUp({
+      email: authForm.email,
+      password: authForm.password,
+    });
+    if (error) { setAuthError(error.message); return; }
+    // members 테이블에 pending 상태로 등록
+    await supabase.from("members").insert({
+      name: authForm.name,
+      email: authForm.email,
+      approval_status: "pending",
+      role: "operator",
+      joined_at: new Date().toISOString().slice(0, 10),
+    });
     setAuthState("pending");
   };
 
   const authCardStyle = { background: "#fff", borderRadius: 20, padding: "40px 44px", width: 400, boxShadow: "0 25px 50px rgba(0,0,0,0.35)" };
+
+  if (authState === "loading") {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "linear-gradient(195deg, #0f0f23 0%, #1a1a3e 100%)" }}>
+        <div style={{ color: "#94a3b8", fontSize: 16 }}>로딩 중...</div>
+      </div>
+    );
+  }
 
   if (authState === "logged-out") {
     return (
@@ -3550,7 +3607,7 @@ ${platformList}
 
         <div style={{ borderTop: "1px solid #ffffff12", padding: "12px 0" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: sidebarCollapsed ? "10px 18px" : "10px 20px", cursor: "pointer" }}
-            onClick={() => setAuthState("logged-out")}>
+            onClick={async () => { await supabase.auth.signOut(); setCurrentUser(null); setAuthState("logged-out"); }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
             </svg>
