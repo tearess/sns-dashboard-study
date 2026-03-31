@@ -463,7 +463,7 @@ export default function SNSDashboard() {
 
   // 서비스 연동 자격증명
   const [serviceCredentials, setServiceCredentials] = useState({
-    supabase:    { projectUrl: "", publishableKey: "", anonKeyLegacy: "" },
+    supabase:    { projectUrl: "", publishableKey: "" },
     github:      { personalAccessToken: "", owner: "", repo: "" },
     vercel:      { accessToken: "", projectId: "", orgId: "" },
     googleSheet: { spreadsheetId: "", serviceAccountEmail: "", privateKey: "" },
@@ -2825,9 +2825,8 @@ ${platformList}
         note: "supabase.com → Project Settings → API",
         desc: "PostgreSQL 기반의 오픈소스 백엔드 서비스. 데이터베이스, 인증, 스토리지, 실시간 기능을 제공하며 SNS 대시보드의 모든 데이터를 저장하고 관리하는 핵심 인프라입니다.",
         fields: [
-          { key: "projectUrl",     label: "Project URL",       placeholder: "https://xxxx.supabase.co",  secret: false },
-          { key: "publishableKey", label: "Publishable Key",   placeholder: "eyJhbGciOiJIUzI1NiIs...", secret: true },
-          { key: "anonKeyLegacy",  label: "Anon Key (Legacy)", placeholder: "eyJhbGciOiJIUzI1NiIs...", secret: true },
+          { key: "projectUrl",     label: "Project URL",     placeholder: "https://xxxx.supabase.co",  secret: false },
+          { key: "publishableKey", label: "Publishable Key", placeholder: "sb_publishable_...",         secret: true },
         ],
       },
       github: {
