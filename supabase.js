@@ -9,16 +9,46 @@ export const DEMO_MODE =
   !supabaseAnonKey ||
   supabaseUrl === "https://your-project-ref.supabase.co";
 
+const createDemoQuery = (table, operation = "select") => {
+  const isWrite = ["insert", "update"].includes(operation);
+  const response = () => {
+    if (isWrite) {
+      return { data: null, error: { message: "데모 모드: Supabase 미연결" } };
+    }
+
+    if (["sns_credentials", "service_credentials", "members"].includes(table)) {
+      return { data: [], error: null };
+    }
+
+    return { data: null, error: null };
+  };
+
+  const query = {
+    select: () => query,
+    order: () => query,
+    eq: () => query,
+    single: () => Promise.resolve(response()),
+    then: (resolve, reject) => Promise.resolve(response()).then(resolve, reject),
+  };
+
+  return query;
+};
+
 // 데모 모드일 때 더미 클라이언트 (에러 방지용)
 const dummyClient = {
-  from: () => ({
-    select: () => ({ order: () => Promise.resolve({ data: [], error: null }) }),
-    insert: () => ({ select: () => ({ single: () => Promise.resolve({ data: null, error: { message: "데모 모드: Supabase 미연결" } }) }) }),
-    update: () => ({ eq: () => Promise.resolve({ error: { message: "데모 모드: Supabase 미연결" } }) }),
+  from: (table) => ({
+    select: () => createDemoQuery(table),
+    insert: () => createDemoQuery(table, "insert"),
+    update: () => createDemoQuery(table, "update"),
     upsert: () => Promise.resolve({ error: null }),
-    delete: () => ({ eq: () => Promise.resolve({ error: null }) }),
-    eq: () => ({ single: () => Promise.resolve({ data: null, error: null }) }),
+    delete: () => createDemoQuery(table, "delete"),
   }),
+  auth: {
+    getSession: () => Promise.resolve({ data: { session: null }, error: null }),
+    signInWithPassword: () => Promise.resolve({ data: null, error: { message: "데모 모드: Supabase 미연결" } }),
+    signUp: () => Promise.resolve({ data: null, error: { message: "데모 모드: Supabase 미연결" } }),
+    signOut: () => Promise.resolve({ error: null }),
+  },
   functions: {
     invoke: () => Promise.resolve({ data: null, error: { message: "데모 모드: Supabase 미연결" } }),
   },

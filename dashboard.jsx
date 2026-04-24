@@ -277,6 +277,48 @@ const MetricsLineChart = ({ labels, series, height = 200 }) => {
   );
 };
 
+const readStoredJson = (key, fallback) => {
+  try {
+    if (typeof localStorage === "undefined") return fallback;
+    const saved = localStorage.getItem(key);
+    return saved ? JSON.parse(saved) : fallback;
+  } catch {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Ignore storage cleanup failures and keep the default order.
+    }
+    return fallback;
+  }
+};
+
+const BOOTSTRAP_ADMIN_EMAIL = import.meta.env.VITE_BOOTSTRAP_ADMIN_EMAIL?.toLowerCase();
+const DISABLE_AUTH = import.meta.env.VITE_DISABLE_AUTH === "true";
+
+const localAdmin = {
+  id: "local-admin",
+  name: "로컬 관리자",
+  email: BOOTSTRAP_ADMIN_EMAIL || "local-admin",
+  joinedAt: new Date().toISOString().slice(0, 10),
+  approvalStatus: "approved",
+  role: "admin",
+};
+
+const getBootstrapAdmin = (email) => {
+  if (!BOOTSTRAP_ADMIN_EMAIL || email?.toLowerCase() !== BOOTSTRAP_ADMIN_EMAIL) {
+    return null;
+  }
+
+  return {
+    id: "bootstrap-admin",
+    name: "초기 관리자",
+    email,
+    joinedAt: new Date().toISOString().slice(0, 10),
+    approvalStatus: "approved",
+    role: "admin",
+  };
+};
+
 // --- Main App ---
 export default function SNSDashboard() {
   const [activeMenu, setActiveMenu] = useState("contents");
@@ -366,8 +408,7 @@ export default function SNSDashboard() {
 
   // 편집 화면 하단 플랫폼 카드 순서 (localStorage 영속)
   const [draftPlatformOrder, setDraftPlatformOrder] = useState(() => {
-    const saved = localStorage.getItem("draftPlatformOrder");
-    return saved ? JSON.parse(saved) : ["twitter", "youtube", "facebook", "instagram", "threads"];
+    return readStoredJson("draftPlatformOrder", ["twitter", "youtube", "facebook", "instagram", "threads"]);
   });
   const draftPlatformDragRef = useRef(null);
 
@@ -456,8 +497,7 @@ export default function SNSDashboard() {
   const [integrationTab, setIntegrationTab] = useState("sns");
   // SNS 플랫폼 순서 (드래그 앤 드롭으로 변경, localStorage에 자동 저장)
   const [snsOrder, setSnsOrder] = useState(() => {
-    const saved = localStorage.getItem("snsOrder");
-    return saved ? JSON.parse(saved) : ["twitter", "youtube", "facebook", "instagram", "threads"];
+    return readStoredJson("snsOrder", ["twitter", "youtube", "facebook", "instagram", "threads"]);
   });
   const dragSnsRef = useRef(null);
 
@@ -485,8 +525,9 @@ export default function SNSDashboard() {
   // 앱 시작 시 세션 확인 + DB에서 자격증명 로드
   useEffect(() => {
     const loadCredentials = async () => {
-      // DEMO_MODE이면 세션 확인 없이 바로 승인 상태로
-      if (DEMO_MODE) {
+      // 로컬 전용/데모 모드이면 세션 확인 없이 바로 승인 상태로
+      if (DEMO_MODE || DISABLE_AUTH) {
+        setCurrentUser(localAdmin);
         setAuthState("approved");
       } else {
         // Supabase 세션 확인
@@ -495,18 +536,25 @@ export default function SNSDashboard() {
           setAuthState("logged-out");
           return;
         }
+
+        const bootstrapAdmin = getBootstrapAdmin(session.user.email);
+        if (bootstrapAdmin) {
+          setCurrentUser(bootstrapAdmin);
+          setAuthState("approved");
+        } else {
         // members 테이블에서 승인 상태 확인
-        const { data: memberData } = await supabase
+          const { data: memberData } = await supabase
           .from("members")
           .select("*")
           .eq("email", session.user.email)
           .single();
-        if (!memberData || memberData.approval_status !== "approved") {
-          setAuthState("pending");
-          return;
+          if (!memberData || memberData.approval_status !== "approved") {
+            setAuthState("pending");
+            return;
+          }
+          setCurrentUser(memberData);
+          setAuthState("approved");
         }
-        setCurrentUser(memberData);
-        setAuthState("approved");
       }
 
       const [{ data: snsData }, { data: svcData }, { data: membersData }] = await Promise.all([
@@ -3425,6 +3473,14 @@ ${platformList}
       password: authForm.password,
     });
     if (error) { setAuthError("이메일 또는 비밀번호가 올바르지 않습니다."); return; }
+
+    const bootstrapAdmin = getBootstrapAdmin(authForm.email);
+    if (bootstrapAdmin) {
+      setCurrentUser(bootstrapAdmin);
+      setAuthState("approved");
+      return;
+    }
+
     // 로그인 성공 후 승인 상태 확인
     const { data: memberData } = await supabase
       .from("members")
@@ -3601,15 +3657,17 @@ ${platformList}
           </div>
         </div>
 
-        <div style={{ borderTop: "1px solid #ffffff12", padding: "12px 0" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: sidebarCollapsed ? "10px 18px" : "10px 20px", cursor: "pointer" }}
-            onClick={async () => { await supabase.auth.signOut(); setCurrentUser(null); setAuthState("logged-out"); }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
-            </svg>
-            {!sidebarCollapsed && <span style={{ fontSize: 13, color: "#94a3b8" }}>로그아웃</span>}
+        {!DISABLE_AUTH && (
+          <div style={{ borderTop: "1px solid #ffffff12", padding: "12px 0" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: sidebarCollapsed ? "10px 18px" : "10px 20px", cursor: "pointer" }}
+              onClick={async () => { await supabase.auth.signOut(); setCurrentUser(null); setAuthState("logged-out"); }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+              {!sidebarCollapsed && <span style={{ fontSize: 13, color: "#94a3b8" }}>로그아웃</span>}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Main Content */}
